@@ -145,6 +145,51 @@ class TestInputValidation:
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "INVALID_REQUEST"
 
+    @pytest.mark.parametrize("field", ["internal_pressure", "external_pressure"])
+    def test_negative_pressure_rejected(self, field):
+        # 压力约定以受压为正，负值（如把真空吸附工况填成负压力）是违约输入，
+        # 必须在计算前挡回，绝不允许带着它算出一份看似自洽的结果
+        resp = client.post(
+            "/stress", json={**BASE_PAYLOAD, field: -10.0, "query_radius": 100.0}
+        )
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert err["code"] == "INVALID_PRESSURE"
+        assert field in err["message"]
+
+    def test_both_pressures_negative_rejected(self):
+        resp = client.post(
+            "/stress",
+            json={
+                **BASE_PAYLOAD,
+                "internal_pressure": -60.0,
+                "external_pressure": -5.0,
+                "query_radius": 100.0,
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "INVALID_PRESSURE"
+
+    def test_negative_pressure_rejected_on_profile(self):
+        # /profile 与 /stress 共用同一条校验链，同样不许放行负压力
+        resp = client.post(
+            "/profile", json={**BASE_PAYLOAD, "internal_pressure": -60.0}
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "INVALID_PRESSURE"
+
+    def test_negative_pressure_gets_no_computed_results(self):
+        # 事故回归：负内压请求此前返回 200 并附全套自洽数值，
+        # 现在必须只返回结构化错误、不带任何计算结果
+        resp = client.post(
+            "/stress",
+            json={**BASE_PAYLOAD, "internal_pressure": -60.0, "query_radius": 100.0},
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert set(body) == {"error"}
+        assert "inner_hoop_stress" not in body
+
     @pytest.mark.parametrize("nu", [0.6, 1.0, -1.5])
     def test_unphysical_poisson_ratio_rejected(self, nu):
         resp = client.post(
@@ -173,6 +218,56 @@ class TestInputValidation:
         err = resp.json()["error"]
         assert set(err) >= {"code", "message"}
         assert err["message"]
+
+
+class TestLegitimatePressureCombinations:
+    """合法压力组合必须照常计算、结果不变，校验不得误伤。"""
+
+    def test_zero_external_pressure_still_computed(self):
+        # 仅内压、外压为零：零是合法压力值
+        resp = client.post("/stress", json={**BASE_PAYLOAD, "query_radius": 100.0})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["inner_hoop_stress"] == pytest.approx(100.0)
+        assert body["query"]["sigma_r"] == pytest.approx(-60.0)
+
+    def test_external_pressure_exceeding_internal_still_computed(self):
+        # 外压 > 内压：净受压方向反转，但两个压力本身均为正值 → 合法
+        resp = client.post(
+            "/stress",
+            json={
+                **BASE_PAYLOAD,
+                "internal_pressure": 10.0,
+                "external_pressure": 50.0,
+                "query_radius": 150.0,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        sr_ref, st_ref = analytic(100.0, 200.0, 10.0, 50.0, 150.0)
+        assert body["query"]["sigma_r"] == pytest.approx(sr_ref, rel=1e-9)
+        assert body["query"]["sigma_theta"] == pytest.approx(st_ref, rel=1e-9)
+        # 壁面径向应力等于所加压力的负值
+        assert body["lame_A"] == pytest.approx(
+            (10.0 * 100.0**2 - 50.0 * 200.0**2) / (200.0**2 - 100.0**2)
+        )
+
+    def test_equal_pressures_hydrostatic_still_computed(self):
+        # 内外等压 → 均匀静水状态：σr = σθ = −p，von Mises 为零（闭口）
+        resp = client.post(
+            "/stress",
+            json={
+                **BASE_PAYLOAD,
+                "internal_pressure": 30.0,
+                "external_pressure": 30.0,
+                "query_radius": 150.0,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["query"]["sigma_r"] == pytest.approx(-30.0)
+        assert body["query"]["sigma_theta"] == pytest.approx(-30.0)
+        assert body["max_von_mises"] == pytest.approx(0.0, abs=1e-9)
 
 
 class TestConcurrency:

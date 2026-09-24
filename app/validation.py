@@ -40,7 +40,13 @@ def validate_geometry(inner_radius: float, outer_radius: float) -> None:
 def validate_pressures(
     internal_pressure: float, external_pressure: float
 ) -> None:
-    """压力约束：两个压力都必须按约定给全且为有限数（压为正）。"""
+    """压力约束：两个压力都必须按约定给全、为有限数且非负（压为正）。
+
+    压力约定以受压为正，负值属于违约输入（例如把真空/吸附工况的
+    吸力直接填成负压力）。这类输入虽能算出数值自洽的结果，但物理
+    含义已与约定不符，必须在进入计算前挡回；零与正值（包括外压
+    大于内压、净受压方向反转的情形）均为合法输入，照常计算。
+    """
     for name, value in (
         ("internal_pressure", internal_pressure),
         ("external_pressure", external_pressure),
@@ -49,6 +55,12 @@ def validate_pressures(
             raise CalculationError(
                 "INVALID_PRESSURE",
                 f"{name} 必须为有限数值（约定：压力以压为正），收到 {value!r}",
+            )
+        if value < 0.0:
+            raise CalculationError(
+                "INVALID_PRESSURE",
+                f"{name} 不得为负值：压力约定以受压为正，"
+                f"负压/吸附工况应换算为对侧壁面的正压力后给出，收到 {value!r}",
             )
 
 

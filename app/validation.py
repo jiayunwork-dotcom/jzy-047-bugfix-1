@@ -40,7 +40,13 @@ def validate_geometry(inner_radius: float, outer_radius: float) -> None:
 def validate_pressures(
     internal_pressure: float, external_pressure: float
 ) -> None:
-    """压力约束：两个压力都必须按约定给全且为有限数（压为正）。"""
+    """压力约束：两个压力都必须按约定给全、为有限数且非负（压为正）。
+
+    输入约定为「压力以受压为正」，负值属于违约输入（例如把真空/吸附
+    工况折算成负压力填入）。Lamé 解对压力是线性的，负压力不会被
+    计算本身暴露，只会产出一组数值自洽但物理含义错误的应力，
+    因此必须在进入计算前挡回。零为合法取值：该壁面不受压。
+    """
     for name, value in (
         ("internal_pressure", internal_pressure),
         ("external_pressure", external_pressure),
@@ -49,6 +55,13 @@ def validate_pressures(
             raise CalculationError(
                 "INVALID_PRESSURE",
                 f"{name} 必须为有限数值（约定：压力以压为正），收到 {value!r}",
+            )
+        if value < 0.0:
+            raise CalculationError(
+                "INVALID_PRESSURE",
+                f"{name} 不允许为负值：压力约定以受压为正，收到 {value!r}。"
+                "该壁面不受压时请填 0；真空/吸附等工况请按实际受压面"
+                "折算为正值压力后重新提交",
             )
 
 

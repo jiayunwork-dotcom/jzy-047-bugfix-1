@@ -88,7 +88,7 @@ tests/
 | 场景 | HTTP | code |
 |---|---|---|
 | 外半径 ≤ 内半径、半径非正值 | 400 | `INVALID_GEOMETRY` |
-| 压力缺失/非有限数 | 422 / 400 | `INVALID_REQUEST` / `INVALID_PRESSURE` |
+| 压力缺失/非有限数/负值（约定受压为正） | 422 / 400 | `INVALID_REQUEST` / `INVALID_PRESSURE` |
 | 泊松比超出 −1 < ν ≤ 0.5 | 400 | `INVALID_POISSON_RATIO` |
 | 查询半径越出壁厚 | 400 | `QUERY_RADIUS_OUT_OF_RANGE` |
 | 屈服强度非正值 | 400 | `INVALID_YIELD_STRENGTH` |

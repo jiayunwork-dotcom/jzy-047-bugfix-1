@@ -88,6 +88,55 @@ class TestStressEndpoint:
         assert body["yielded"] is None
 
 
+class TestPressureConventionLegitimateCases:
+    """压力约定允许的取值必须照旧正常计算，结果不受负值拦截影响。"""
+
+    def test_external_pressure_exceeding_internal_accepted(self):
+        # 外压 > 内压（净受压方向反转），但两者均为正：合法
+        resp = client.post(
+            "/stress",
+            json={**BASE_PAYLOAD, "internal_pressure": 10.0,
+                  "external_pressure": 30.0, "query_radius": 150.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        sr_ref, st_ref = analytic(100.0, 200.0, 10.0, 30.0, 150.0)
+        assert body["query"]["sigma_r"] == pytest.approx(sr_ref, rel=1e-9)
+        assert body["query"]["sigma_theta"] == pytest.approx(st_ref, rel=1e-9)
+        # 壁面径向应力等于负压力：σr(a) = −p_i，σr(b) = −p_o
+        sr_a, _ = analytic(100.0, 200.0, 10.0, 30.0, 100.0)
+        sr_b, _ = analytic(100.0, 200.0, 10.0, 30.0, 200.0)
+        assert sr_a == pytest.approx(-10.0)
+        assert sr_b == pytest.approx(-30.0)
+
+    def test_equal_pressures_give_hydrostatic_state(self):
+        # 内压 = 外压（静水压）：合法，全场均匀 −p，闭口 von Mises 为零
+        resp = client.post(
+            "/stress",
+            json={**BASE_PAYLOAD, "internal_pressure": 25.0,
+                  "external_pressure": 25.0, "query_radius": 150.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["query"]["sigma_r"] == pytest.approx(-25.0)
+        assert body["query"]["sigma_theta"] == pytest.approx(-25.0)
+        assert body["max_von_mises"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_zero_pressures_accepted(self):
+        # 两个压力都为零（壁面不受压）：合法，应力场处处为零
+        resp = client.post(
+            "/stress",
+            json={**BASE_PAYLOAD, "internal_pressure": 0.0,
+                  "external_pressure": 0.0, "query_radius": 150.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["inner_hoop_stress"] == 0.0
+        assert body["outer_hoop_stress"] == 0.0
+        assert body["query"]["sigma_r"] == 0.0
+        assert body["query"]["sigma_theta"] == 0.0
+
+
 class TestProfileEndpoint:
     def test_profile_points_match_lame_solution_pointwise(self):
         resp = client.post("/profile", json={**BASE_PAYLOAD, "n_points": 41})
@@ -144,6 +193,22 @@ class TestInputValidation:
         resp = client.post("/stress", json=payload)
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "INVALID_REQUEST"
+
+    @pytest.mark.parametrize("endpoint", ["/stress", "/profile"])
+    @pytest.mark.parametrize("field", ["internal_pressure", "external_pressure"])
+    @pytest.mark.parametrize("value", [-50.0, -1e-9])
+    def test_negative_pressure_rejected(self, endpoint, field, value):
+        # 压力约定「受压为正」：任何负值都是违约输入，必须在计算前挡回，
+        # 绝不允许带病算出一套数值自洽的假结果（真空工况误填负压的实际案例）
+        payload = {**BASE_PAYLOAD, field: value}
+        if endpoint == "/stress":
+            payload["query_radius"] = 150.0
+        resp = client.post(endpoint, json=payload)
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert err["code"] == "INVALID_PRESSURE"
+        assert field in err["message"]
+        assert "受压为正" in err["message"]
 
     @pytest.mark.parametrize("nu", [0.6, 1.0, -1.5])
     def test_unphysical_poisson_ratio_rejected(self, nu):
